@@ -154,6 +154,24 @@ class MultiAgentCyberEngine:
         if self.graph.nodes[target]["status"] == "isolated":
             return f"Attack blocked. Target {target} is physically isolated."
 
+        # --- NEW DDOS LOGIC ---
+        if action_type == "ddos":
+            # DDoS does not grant access; it overwhelms the node
+            if random.random() <= 0.90:  # 90% chance of success for the flood
+                self.graph.nodes[target]["status"] = "offline"
+                self.score += 10 # Reward Red for causing chaos
+                return f"Massive DDoS flood successful. {target} is OFFLINE."
+            else:
+                return f"DDoS attack on {target} absorbed by load balancers."
+                
+        # ----------------------
+
+        if action_type == "ransomware":
+            if self.graph.nodes[target]["status"] != "isolated":
+                self.graph.nodes[target]["status"] = "encrypted"
+                self.score += 25 # Massive score penalty for encryption
+                return f"Ransomware payload detonated. {target} is ENCRYPTED."
+
         # Fetch exploit probability if configured
         exploit_info = self.exploits.get(detail, {})
         success_prob = exploit_info.get("prob", 0.85)
@@ -198,6 +216,28 @@ class MultiAgentCyberEngine:
             self.graph.nodes[target]["access"] = "none"
             return f"Remediated node {target}. Malware cleared and credentials revoked."
 
+        elif action_type == "mitigate_ddos" and target in self.graph:
+            if self.graph.nodes[target]["status"] == "offline":
+                self.graph.nodes[target]["status"] = "safe"
+                
+                # MATHEMATICAL INCENTIVE: 
+                # Subtract 10 from Red's score (or add to Blue's reward)
+                self.score -= 10 
+                
+                return f"BGP Blackhole / Scrubbing deployed. Node {target} is back online."
+
+
+        elif action_type == "restore_backup" and target in self.graph:
+            if self.graph.nodes[target]["status"] == "encrypted":
+                self.graph.nodes[target]["status"] = "safe"
+                # If they restore it, Blue reclaims the 25 points
+                self.score -= 25 
+                # Remove attacker access since the backup is clean
+                if target in self.attacker_access:
+                    del self.attacker_access[target]
+                return f"Restored {target} from immutable backups. Node safe."
+
+            
         elif action_type == "sleep":
             return "Defender monitoring alerts (no intervention)."
 

@@ -1,105 +1,158 @@
-import heapq
 import networkx as nx
+import random
 
-class AdvancedRedAgent:
-    def __init__(self, config: dict):
+class HybridRedAgent:
+    def __init__(self, config):
+        self.config = config
         self.exploits = config.get("exploits", {})
-        self.priv_esc = config.get("privilege_escalation", {})
-        
-        # Identify the 100-point targets from the YAML
-        sensitive_raw = config.get("sensitive_hosts", {})
-        self.targets = [str(eval(k)) if isinstance(k, str) else str(tuple(k)) for k in sensitive_raw.keys()]
+        self.target_node = None 
 
     def get_optimal_attack_step(self, graph: nx.DiGraph, attacker_access: dict):
-        """
-        Calculates the shortest path to a sensitive host and returns the next action.
-        """
+        if not self.target_node:
+            high_score = -1
+            for n, d in graph.nodes(data=True):
+                if d.get("value", 0) > high_score:
+                    high_score = d.get("value", 0)
+                    self.target_node = n
+
+        # 1. RANDOMIZED ENTRY POINT
         if not attacker_access:
-            return ("exploit", "(1, 0)", "http") # Fixed entry point for initial breach
+            # Find all nodes in Subnet 1 (the DMZ/outer edge)
+            entry_points = [n for n, d in graph.nodes(data=True) if d.get("subnet") == 1]
+            if not entry_points: 
+                entry_points = list(graph.nodes) # Fallback
+            
+            entry = random.choice(entry_points)
+            return ("exploit", entry, "http")
 
-        # 1. Identify starting nodes (where the attacker currently has root)
-        start_nodes = [node for node, access in attacker_access.items() if access == "root"]
-        
-        if not start_nodes:
-            # Need to escalate privilege before moving laterally
-            for node, access in attacker_access.items():
-                if access == "user":
-                    return ("escalate", node, None)
-                    
-        # 2. Run Dijkstra's Algorithm from all root-compromised nodes
-        shortest_path = self._run_dijkstra(graph, start_nodes)
-        
-        if shortest_path:
-            # The path returns a list of nodes e.g., ['(1, 0)', '(2, 0)', '(3, 1)']
-            # The next step is the first uncompromised node in the sequence
-            next_target = shortest_path[1] 
+        # 2. PROBABILISTIC DIJKSTRA WITH JITTER
+        weighted_graph = graph.copy()
+        for u, v, data in weighted_graph.edges(data=True):
+            success_prob = 0.85
+            if "allowed_services" in data and len(data["allowed_services"]) > 0:
+                svc = data["allowed_services"][0]
+                success_prob = self.exploits.get(svc, {}).get("prob", 0.85)
             
-            # Determine which service to exploit based on firewall edges
-            edge_data = graph.get_edge_data(shortest_path[0], next_target)
-            allowed = edge_data.get("allowed_services", [])
-            target_services = graph.nodes[next_target].get("services", [])
-            
-            # Pick a valid service to target
-            for svc in target_services:
-                if svc in allowed or "internal_traffic" in allowed:
-                    return ("pivot", next_target, svc)
-                    
-        return ("sleep", None) # No valid path found (Defender won)
+            # Inject a tiny random "noise" factor (0.0 to 0.3) to the weight
+            # This makes the AI occasionally pick a different path if costs are similar
+            noise = random.uniform(0.0, 0.3)
+            weighted_graph[u][v]['weight'] = (1.0 / success_prob) + noise
 
-    def _run_dijkstra(self, graph: nx.DiGraph, start_nodes: list) -> list:
-        """
-        Standard Dijkstra implementation using a priority queue.
-        Finds the lowest-cost path from any start_node to any sensitive target.
-        """
-        # Priority Queue: stores tuples of (total_cost, current_node, path_history)
-        pq = []
-        for start in start_nodes:
-            heapq.heappush(pq, (0, start, [start]))
-            
-        visited = set()
-        
-        while pq:
-            current_cost, current_node, path = heapq.heappop(pq)
-            
-            # Control Flow: Goal Check
-            if current_node in self.targets and current_node not in start_nodes:
-                return path 
-                
-            if current_node in visited:
+        best_path = None
+        current_foothold = None
+
+        for node, access in attacker_access.items():
+            if graph.nodes[node].get("status") == "isolated":
                 continue
-            visited.add(current_node)
-            
-            # Control Flow: Explore Neighbors
-            for neighbor in graph.successors(current_node):
-                if neighbor in visited or graph.nodes[neighbor]["status"] == "isolated":
-                    continue
-                    
-                edge_cost = self._calculate_edge_cost(graph, current_node, neighbor)
-                
-                if edge_cost < float('inf'):
-                    new_cost = current_cost + edge_cost
-                    new_path = list(path)
-                    new_path.append(neighbor)
-                    heapq.heappush(pq, (new_cost, neighbor, new_path))
-                    
-        return None # Target unreachable
+            try:
+                path = nx.shortest_path(weighted_graph, source=node, target=self.target_node, weight='weight')
+                if not best_path or len(path) < len(best_path):
+                    best_path = path
+                    current_foothold = node
+            except nx.NetworkXNoPath:
+                continue
 
-    def _calculate_edge_cost(self, graph, u, v) -> float:
-        """Calculates traversal weight based on exploit costs."""
-        edge_data = graph.get_edge_data(u, v)
-        allowed = edge_data.get("allowed_services", [])
-        target_services = graph.nodes[v].get("services", [])
+        if not best_path:
+            return ("sleep", None, None)
+
+        # 3. ENFORCE KILL CHAIN
+        current_access = attacker_access[current_foothold]
         
-        # Check if the firewall allows connection to a running service
-        valid_services = [s for s in target_services if s in allowed or "internal_traffic" in allowed]
-        if not valid_services:
-            return float('inf') # Wall detected
+        if len(best_path) == 1:
+            if current_access != "root":
+                return ("escalate", current_foothold, None)
+            return ("sleep", None, None)
+
+        next_hop = best_path[1]
+        
+        if current_access != "root":
+            return ("escalate", current_foothold, None)
+        else:
+            return ("pivot", next_hop, "smb")
+
+
+class BotnetAgent:
+    def __init__(self, config):
+        self.config = config
+
+    def get_optimal_attack_step(self, graph, attacker_access):
+        # Locate all servers in the DMZ that are not already offline or isolated
+        dmz_nodes = [
+            n for n, d in graph.nodes(data=True) 
+            if d.get("subnet") == 1 and d.get("status") not in ["offline", "isolated"]
+        ]
+        
+        if dmz_nodes:
+            # Pick a random target to flood
+            target = random.choice(dmz_nodes)
+            return ("ddos", target, "syn_flood")
             
-        # Find the cheapest exploit for the available services
-        min_cost = float('inf')
-        for exp_name, exp_data in self.exploits.items():
-            if exp_data["service"] in valid_services:
-                if exp_data["cost"] < min_cost:
-                    min_cost = exp_data["cost"]
+        # If all DMZ nodes are down, the botnet goes to sleep
+        return ("sleep", None, None)
+
+class RansomwareAgent:
+    def __init__(self, config):
+        self.config = config
+
+    def get_optimal_attack_step(self, graph, attacker_access):
+        actions = []
+        
+        # 1. Initial Foothold
+        if not attacker_access:
+            entry_points = [n for n, d in graph.nodes(data=True) if d.get("subnet") == 1]
+            if entry_points: 
+                import random
+                actions.append(("exploit", random.choice(entry_points), "http"))
+            return actions
+
+        # 2. Encrypt all currently owned nodes
+        for node, access in list(attacker_access.items()):
+            if graph.nodes[node].get("status") not in ["encrypted", "isolated"]:
+                if access == "root":
+                    actions.append(("ransomware", node, None))
+                else:
+                    actions.append(("escalate", node, None))
+        
+        # 3. Viral Spread (Breadth-First Expansion)
+        # Simultaneously pivot to EVERY connected neighbor that isn't infected
+        for node in attacker_access.keys():
+            for neighbor in graph.neighbors(node):
+                if neighbor not in attacker_access and graph.nodes[neighbor].get("status") != "isolated":
+                    # Prevent duplicate commands to the same node
+                    if not any(a[1] == neighbor for a in actions):
+                        actions.append(("pivot", neighbor, "smb"))
+                        
+        if not actions:
+            actions.append(("sleep", None, None))
+            
+        return actions
+    def __init__(self, config):
+        self.config = config
+
+    def get_optimal_attack_step(self, graph, attacker_access):
+        # 1. Initial Foothold
+        if not attacker_access:
+            entry_points = [n for n, d in graph.nodes(data=True) if d.get("subnet") == 1]
+            if not entry_points: 
+                entry_points = list(graph.nodes)
+            import random
+            entry = random.choice(entry_points)
+            return ("exploit", entry, "http")
+
+        # 2. Encrypt Current Assets
+        # If we have access to a node and it isn't encrypted yet, lock it down!
+        for node, access in attacker_access.items():
+            if graph.nodes[node].get("status") not in ["encrypted", "isolated"]:
+                if access == "root":
+                    return ("ransomware", node, None)
+                else:
+                    return ("escalate", node, None)
+        
+        # 3. Worm Spread (Breadth-First Expansion)
+        # If all currently owned nodes are encrypted, aggressively pivot to adjacent neighbors
+        for node in attacker_access.keys():
+            for neighbor in graph.neighbors(node):
+                if neighbor not in attacker_access and graph.nodes[neighbor].get("status") != "isolated":
+                    return ("pivot", neighbor, "smb")
                     
-        return min_cost
+        return ("sleep", None, None)

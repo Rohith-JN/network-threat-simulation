@@ -1,0 +1,245 @@
+/* page.module.css */
+
+/* --- Control Panel Layout --- */
+.controlSection {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #374151;
+}
+
+.sectionTitle {
+  font-size: 0.875rem;
+  font-weight: bold;
+  color: #9ca3af;
+  margin-bottom: 0.5rem;
+  margin-top: 0;
+}
+
+.buttonGroup {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* --- Action Buttons --- */
+.startButton {
+  flex: 1; /* Makes the buttons equal width */
+  padding: 0.5rem;
+  background-color: #3b82f6; /* Blue 500 - updated for defense */
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.startButton:hover {
+  background-color: #2563eb; /* Blue 600 */
+}
+
+.unhinderedButton {
+  flex: 1;
+  padding: 0.5rem;
+  background-color: #7e22ce; /* Purple 700 */
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.unhinderedButton:hover {
+  background-color: #6b21a8; /* Purple 800 */
+}
+
+.ddosButton {
+  flex: 1;
+  padding: 0.5rem;
+  background-color: #d97706; /* Amber 600 */
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.ddosButton:hover {
+  background-color: #b45309; /* Amber 700 */
+}
+
+.dashboardContainer {
+  display: flex;
+  height: 100vh; /* CRITICAL: React Flow needs a strict height */
+  width: 100vw;
+  background-color: #030712;
+  color: #ffffff;
+  font-family: system-ui, -apple-system, sans-serif;
+  overflow: hidden;
+}
+
+/* --- Left Panel (Canvas) --- */
+.canvasArea {
+  flex: 1;
+  position: relative;
+  height: 100%; /* CRITICAL for React Flow */
+}
+
+.hudOverlay {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  background-color: rgba(17, 24, 39, 0.9);
+  padding: 1rem;
+  border-radius: 8px;
+  border: 1px solid #374151;
+  z-index: 10;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
+}
+
+.hudOverlay h1 {
+  margin: 0 0 0.5rem 0;
+  font-size: 1.25rem;
+  font-weight: bold;
+}
+
+.hudOverlay p {
+  margin: 0.25rem 0;
+  font-size: 0.875rem;
+  color: #9ca3af;
+}
+
+.scoreRed { color: #f87171; font-weight: bold; }
+.scoreBlue { color: #60a5fa; font-weight: bold; }
+
+/* --- Right Panel (Telemetry Logs) --- */
+.sidebar {
+  width: 24rem;
+  background-color: #111827;
+  border-left: 1px solid #1f2937;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar h2 {
+  margin: 0 0 1rem 0;
+  font-size: 1.125rem;
+  font-weight: bold;
+  border-bottom: 1px solid #374151;
+  padding-bottom: 0.5rem;
+}
+
+.logContainer {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  font-family: monospace;
+  font-size: 0.875rem;
+}
+
+.logEntry {
+  padding: 0.75rem;
+  border-radius: 6px;
+  border: 1px solid #374151;
+  background-color: #1f2937;
+  color: #d1d5db;
+}
+
+.redAction {
+  background-color: rgba(69, 10, 10, 0.3);
+  border-color: rgba(127, 29, 29, 0.5);
+  color: #fca5a5;
+}
+
+.blueAction {
+  background-color: rgba(23, 37, 84, 0.3);
+  border-color: rgba(30, 58, 138, 0.5);
+  color: #93c5fd;
+}
+
+
+/* --- Custom Node Styles --- */
+.customNode {
+  padding: 10px;
+  border-radius: 6px;
+  width: 150px;
+  font-size: 12px;
+  color: white;
+  text-align: left;
+  border: 2px solid transparent;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+  transition: all 0.3s ease;
+}
+
+.nodeHeader {
+  font-weight: bold;
+  font-size: 14px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+  padding-bottom: 4px;
+  text-align: center;
+}
+
+.nodeBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.warningText {
+  color: #fca5a5;
+  font-weight: bold;
+}
+
+/* Node Status Colors */
+.nodeSafe {
+  background-color: #1f2937; /* Dark Gray */
+  border-color: #10b981;     /* Emerald Green */
+}
+
+.nodeCompromised {
+  background-color: #450a0a; /* Dark Red */
+  border-color: #ef4444;     /* Bright Red */
+}
+
+.nodeIsolated {
+  background-color: #111827; /* Near Black */
+  border-color: #6b7280;     /* Gray */
+  opacity: 0.6;
+  border-style: dashed;
+}
+
+/* Make React Flow handles less intrusive */
+.handle {
+  background-color: #9ca3af;
+  border: none;
+  width: 6px;
+  height: 6px;
+}
+
+
+.nodeOffline {
+  background-color: #78350f; /* Dark Amber */
+  border-color: #f59e0b;     /* Bright Amber */
+  animation: shake 0.5s infinite; 
+}
+
+@keyframes shake {
+  0% { transform: translate(1px, 1px) rotate(0deg); }
+  25% { transform: translate(-1px, -2px) rotate(-1deg); }
+  50% { transform: translate(-3px, 0px) rotate(1deg); }
+  75% { transform: translate(3px, 2px) rotate(0deg); }
+  100% { transform: translate(1px, -1px) rotate(1deg); }
+}
+
+.nodeEncrypted {
+  background-color: #4c1d95; /* Deep Purple */
+  border-color: #a855f7;     /* Bright Purple */
+  box-shadow: 0 0 10px rgba(168, 85, 247, 0.5);
+}
+
+
