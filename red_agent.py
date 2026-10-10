@@ -1,158 +1,90 @@
-import networkx as nx
 import random
+import networkx as nx
+from attack_rules import exploits_for, escalation_for
+
 
 class HybridRedAgent:
-    def __init__(self, config):
+    def __init__(self, config, seed=42):
         self.config = config
-        self.exploits = config.get("exploits", {})
-        self.target_node = None 
+        self.rng = random.Random(seed)
 
-    def get_optimal_attack_step(self, graph: nx.DiGraph, attacker_access: dict):
-        if not self.target_node:
-            high_score = -1
-            for n, d in graph.nodes(data=True):
-                if d.get("value", 0) > high_score:
-                    high_score = d.get("value", 0)
-                    self.target_node = n
+    def entry_action(self, graph):
+        candidates = []
+        for node, data in graph.nodes(data=True):
+            if data.get('subnet') != 1 or data.get('status') == 'isolated':
+                continue
+            if not graph.has_edge('(0, 0)', node):
+                continue
+            for name, _ in exploits_for(self.config, graph, node,
+                                        graph.edges['(0, 0)', node]['allowed_services']):
+                candidates.append(('exploit', node, name))
+        return self.rng.choice(candidates) if candidates else ('sleep', None, None)
 
-        # 1. RANDOMIZED ENTRY POINT
+    def attack_graph(self, graph):
+        weighted = nx.DiGraph()
+        weighted.add_nodes_from(n for n, d in graph.nodes(data=True)
+                                if d.get('status') != 'isolated' and d.get('subnet') != 0)
+        for source, target, data in graph.edges(data=True):
+            if source not in weighted or target not in weighted:
+                continue
+            rules = exploits_for(self.config, graph, target, data.get('allowed_services', []))
+            if rules:
+                name, rule = max(rules, key=lambda item: item[1]['prob'])
+                weighted.add_edge(source, target, exploit=name,
+                                  weight=1 / rule['prob'] + self.rng.uniform(0, 0.1))
+        return weighted
+
+    def get_optimal_attack_step(self, graph, attacker_access):
         if not attacker_access:
-            # Find all nodes in Subnet 1 (the DMZ/outer edge)
-            entry_points = [n for n, d in graph.nodes(data=True) if d.get("subnet") == 1]
-            if not entry_points: 
-                entry_points = list(graph.nodes) # Fallback
-            
-            entry = random.choice(entry_points)
-            return ("exploit", entry, "http")
-
-        # 2. PROBABILISTIC DIJKSTRA WITH JITTER
-        weighted_graph = graph.copy()
-        for u, v, data in weighted_graph.edges(data=True):
-            success_prob = 0.85
-            if "allowed_services" in data and len(data["allowed_services"]) > 0:
-                svc = data["allowed_services"][0]
-                success_prob = self.exploits.get(svc, {}).get("prob", 0.85)
-            
-            # Inject a tiny random "noise" factor (0.0 to 0.3) to the weight
-            # This makes the AI occasionally pick a different path if costs are similar
-            noise = random.uniform(0.0, 0.3)
-            weighted_graph[u][v]['weight'] = (1.0 / success_prob) + noise
-
-        best_path = None
-        current_foothold = None
-
-        for node, access in attacker_access.items():
-            if graph.nodes[node].get("status") == "isolated":
-                continue
-            try:
-                path = nx.shortest_path(weighted_graph, source=node, target=self.target_node, weight='weight')
-                if not best_path or len(path) < len(best_path):
-                    best_path = path
-                    current_foothold = node
-            except nx.NetworkXNoPath:
-                continue
-
-        if not best_path:
-            return ("sleep", None, None)
-
-        # 3. ENFORCE KILL CHAIN
-        current_access = attacker_access[current_foothold]
-        
-        if len(best_path) == 1:
-            if current_access != "root":
-                return ("escalate", current_foothold, None)
-            return ("sleep", None, None)
-
-        next_hop = best_path[1]
-        
-        if current_access != "root":
-            return ("escalate", current_foothold, None)
-        else:
-            return ("pivot", next_hop, "smb")
+            return self.entry_action(graph)
+        weighted = self.attack_graph(graph)
+        targets = sorted((n for n in weighted if graph.nodes[n].get('value', 0) >= 100),
+                         key=lambda n: graph.nodes[n]['value'], reverse=True)
+        paths = []
+        for target in targets:
+            for source in attacker_access:
+                if source not in weighted:
+                    continue
+                try:
+                    path = nx.shortest_path(weighted, source, target, weight='weight')
+                    cost = nx.path_weight(weighted, path, 'weight') if len(path) > 1 else 0
+                    paths.append((cost, path))
+                except nx.NetworkXNoPath:
+                    pass
+            if paths:
+                break
+        if not paths:
+            return ('sleep', None, None)
+        _, path = min(paths, key=lambda item: item[0])
+        source = path[0]
+        escalation = escalation_for(self.config, graph, source)
+        if attacker_access[source] != 'root' and escalation:
+            return ('escalate', source, escalation)
+        if len(path) > 1:
+            target = path[1]
+            return ('pivot', target, weighted.edges[source, target]['exploit'], source)
+        return ('sleep', None, None)
 
 
-class BotnetAgent:
-    def __init__(self, config):
-        self.config = config
-
+class RansomwareAgent(HybridRedAgent):
+    """One wave per turn, using only footholds present at its start."""
     def get_optimal_attack_step(self, graph, attacker_access):
-        # Locate all servers in the DMZ that are not already offline or isolated
-        dmz_nodes = [
-            n for n, d in graph.nodes(data=True) 
-            if d.get("subnet") == 1 and d.get("status") not in ["offline", "isolated"]
-        ]
-        
-        if dmz_nodes:
-            # Pick a random target to flood
-            target = random.choice(dmz_nodes)
-            return ("ddos", target, "syn_flood")
-            
-        # If all DMZ nodes are down, the botnet goes to sleep
-        return ("sleep", None, None)
-
-class RansomwareAgent:
-    def __init__(self, config):
-        self.config = config
-
-    def get_optimal_attack_step(self, graph, attacker_access):
+        if not attacker_access:
+            return [self.entry_action(graph)]
         actions = []
-        
-        # 1. Initial Foothold
-        if not attacker_access:
-            entry_points = [n for n, d in graph.nodes(data=True) if d.get("subnet") == 1]
-            if entry_points: 
-                import random
-                actions.append(("exploit", random.choice(entry_points), "http"))
-            return actions
-
-        # 2. Encrypt all currently owned nodes
-        for node, access in list(attacker_access.items()):
-            if graph.nodes[node].get("status") not in ["encrypted", "isolated"]:
-                if access == "root":
-                    actions.append(("ransomware", node, None))
-                else:
-                    actions.append(("escalate", node, None))
-        
-        # 3. Viral Spread (Breadth-First Expansion)
-        # Simultaneously pivot to EVERY connected neighbor that isn't infected
-        for node in attacker_access.keys():
-            for neighbor in graph.neighbors(node):
-                if neighbor not in attacker_access and graph.nodes[neighbor].get("status") != "isolated":
-                    # Prevent duplicate commands to the same node
-                    if not any(a[1] == neighbor for a in actions):
-                        actions.append(("pivot", neighbor, "smb"))
-                        
-        if not actions:
-            actions.append(("sleep", None, None))
-            
-        return actions
-    def __init__(self, config):
-        self.config = config
-
-    def get_optimal_attack_step(self, graph, attacker_access):
-        # 1. Initial Foothold
-        if not attacker_access:
-            entry_points = [n for n, d in graph.nodes(data=True) if d.get("subnet") == 1]
-            if not entry_points: 
-                entry_points = list(graph.nodes)
-            import random
-            entry = random.choice(entry_points)
-            return ("exploit", entry, "http")
-
-        # 2. Encrypt Current Assets
-        # If we have access to a node and it isn't encrypted yet, lock it down!
+        weighted = self.attack_graph(graph)
+        scheduled = set()
         for node, access in attacker_access.items():
-            if graph.nodes[node].get("status") not in ["encrypted", "isolated"]:
-                if access == "root":
-                    return ("ransomware", node, None)
-                else:
-                    return ("escalate", node, None)
-        
-        # 3. Worm Spread (Breadth-First Expansion)
-        # If all currently owned nodes are encrypted, aggressively pivot to adjacent neighbors
-        for node in attacker_access.keys():
-            for neighbor in graph.neighbors(node):
-                if neighbor not in attacker_access and graph.nodes[neighbor].get("status") != "isolated":
-                    return ("pivot", neighbor, "smb")
-                    
-        return ("sleep", None, None)
+            if node not in weighted:
+                continue
+            if graph.nodes[node].get('status') != 'encrypted':
+                escalation = escalation_for(self.config, graph, node)
+                if access == 'root':
+                    actions.append(('ransomware', node, None))
+                elif escalation:
+                    actions.append(('escalate', node, escalation))
+            for neighbor in weighted.successors(node):
+                if neighbor not in attacker_access and neighbor not in scheduled:
+                    actions.append(('pivot', neighbor, weighted.edges[node, neighbor]['exploit'], node))
+                    scheduled.add(neighbor)
+        return actions or [('sleep', None, None)]

@@ -1,10 +1,20 @@
 import copy
-import random
+import hashlib
+from attack_rules import exploits_for, escalation_for
 import re
 import networkx as nx
 
 class MultiAgentCyberEngine:
-    def __init__(self, semantic_net: nx.DiGraph, config: dict):
+    def __init__(self, semantic_net: nx.DiGraph, config: dict, scenario="killchain", seed=42):
+        self.scenario = scenario
+        self.seed = seed
+        self.had_compromise = False
+        self.outcome = "Running"
+        self.compromised_ever = set()
+        self.encrypted_ever = set()
+        self.unavailable_host_turns = 0
+        self.first_detection_turn = None
+        self.recovered_hosts = 0
         self.base_graph = semantic_net
         self.config = config
         self.agents = ["red_agent", "blue_agent"]
@@ -15,7 +25,7 @@ class MultiAgentCyberEngine:
 
         self.graph = copy.deepcopy(self.base_graph)
         self.turn = 0
-        self.max_turns = 40
+        self.max_turns = 21
         self.score = 0
         self.attacker_access = {}
         self.event_log = []
@@ -31,8 +41,16 @@ class MultiAgentCyberEngine:
         for node in self.graph.nodes():
             self.graph.nodes[node]["status"] = "safe"
             self.graph.nodes[node]["access"] = "none"
+            self.graph.nodes[node]["encrypted"] = False
 
-        self._log("Simulation initialized. All systems safe.")
+        self.had_compromise = False
+        self.outcome = "Running"
+        self.compromised_ever = set()
+        self.encrypted_ever = set()
+        self.unavailable_host_turns = 0
+        self.first_detection_turn = None
+        self.recovered_hosts = 0
+        self._log(f"Simulation initialized. Scenario: {self.scenario}; seed: {self.seed}.")
 
         observations = {
             "red_agent": self._get_red_observation(),
@@ -50,9 +68,11 @@ class MultiAgentCyberEngine:
         
         # 1. Resolve Red Action & Log
         red_action = actions.get("red_agent")
-        red_msg = self._resolve_attack(red_action)
-        if red_msg:
-            self._log(f"[RED] {red_msg}")
+        wave = red_action if isinstance(red_action, list) else [red_action]
+        for action in wave:
+            red_msg = self._resolve_attack(action)
+            if red_msg:
+                self._log(f"[RED] {red_msg}")
         
         # 2. Resolve Blue Action & Log
         blue_action = actions.get("blue_agent")
@@ -72,6 +92,7 @@ class MultiAgentCyberEngine:
 
         truncated = self.turn >= self.max_turns
         if truncated and not terminated:
+            self.outcome = "Time limit reached"
             self._log("[GAME OVER] Max turns reached.")
         
         terminations = {"red_agent": terminated, "blue_agent": terminated, "__all__": terminated}
@@ -84,43 +105,46 @@ class MultiAgentCyberEngine:
         
         return observations, rewards, terminations, truncations, {"turn": self.turn, "score": self.score}
 
-    def _calculate_rewards(self) -> int:
-        """Calculates score change based on un-isolated attacker access."""
-        reward_delta = 0
-        for node, level in self.attacker_access.items():
-            if self.graph.nodes[node]["status"] == "isolated":
-                continue
-                
-            val = self.graph.nodes[node].get("value", 0)
-            if val > 0:
-                reward_delta += (val * (2 if level == "root" else 1))
-            else:
-                reward_delta += (15 if level == "root" else 5)
-                
+    def damage(self):
+        """Current control, encryption damage, and isolation downtime."""
+        control = sum(max(5, self.graph.nodes[n].get("value", 0)) *
+                      (2 if level == "root" else 1)
+                      for n, level in self.attacker_access.items()
+                      if self.graph.nodes[n]["status"] != "isolated")
+        encrypted = sum(d.get("encrypted", False) for _, d in self.graph.nodes(data=True))
+        unavailable = sum(d.get("subnet") != 0 and d["status"] in ("encrypted", "isolated")
+                          for _, d in self.graph.nodes(data=True))
+        return control + encrypted * 100 + unavailable * 10
+
+    def _calculate_rewards(self):
+        reward_delta = self.damage()
         self.score += reward_delta
+        self.unavailable_host_turns += sum(
+            d.get("subnet") != 0 and d["status"] in ("encrypted", "isolated")
+            for _, d in self.graph.nodes(data=True))
         return reward_delta
 
-    def _check_termination(self) -> tuple[bool, str]:
-        """
-        Checks terminal conditions:
-        - Red wins if a sensitive host is compromised with root access.
-        - Blue wins if all compromised nodes have been isolated (after at least 1 compromise occurred).
-        """
-        # 1. Attacker Win Check: Compromised crown jewels
-        for node, level in self.attacker_access.items():
-            if self.graph.nodes[node]["status"] != "isolated" and level == "root":
-                if self.graph.nodes[node].get("value", 0) >= 100:
+    def _check_termination(self):
+        active = [n for n in self.attacker_access if self.graph.nodes[n]["status"] != "isolated"]
+        encrypted = [n for n, d in self.graph.nodes(data=True) if d.get("encrypted", False)]
+        if self.scenario == "killchain":
+            for node in active:
+                if self.attacker_access[node] == "root" and self.graph.nodes[node].get("value", 0) >= 100:
+                    self.outcome = "Attacker victory"
                     return True, f"Attacker fully breached sensitive host {node} (Red Victory)."
-
-        # 2. Defender Win Check: All threats neutralized (only if threats actually existed)
-        if len(self.attacker_access) > 0:
-            active_threats = [
-                n for n in self.attacker_access 
-                if self.graph.nodes[n]["status"] != "isolated"
-            ]
-            if len(active_threats) == 0:
-                return True, "Defender isolated all compromised hosts (Blue Victory)."
-
+        else:
+            reachable = set(active)
+            for node in active:
+                reachable.update(nx.descendants(self.graph, node))
+            encryptable = [n for n in reachable if self.graph.nodes[n]["status"] != "isolated"
+                           and (self.attacker_access.get(n) == "root" or
+                                escalation_for(self.config, self.graph, n))]
+            if encryptable and all(self.graph.nodes[n]["status"] == "encrypted" for n in encryptable):
+                self.outcome = "Attacker victory"
+                return True, "Ransomware encrypted all remaining reachable encryptable hosts (Red Victory)."
+        if self.had_compromise and not active and not encrypted:
+            self.outcome = "Defender victory"
+            return True, "Defender contained or removed all active compromises (Blue Victory)."
         return False, ""
 
     def _get_red_observation(self):
@@ -154,46 +178,60 @@ class MultiAgentCyberEngine:
         if self.graph.nodes[target]["status"] == "isolated":
             return f"Attack blocked. Target {target} is physically isolated."
 
-        # --- NEW DDOS LOGIC ---
-        if action_type == "ddos":
-            # DDoS does not grant access; it overwhelms the node
-            if random.random() <= 0.90:  # 90% chance of success for the flood
-                self.graph.nodes[target]["status"] = "offline"
-                self.score += 10 # Reward Red for causing chaos
-                return f"Massive DDoS flood successful. {target} is OFFLINE."
-            else:
-                return f"DDoS attack on {target} absorbed by load balancers."
-                
-        # ----------------------
-
+        host = self.graph.nodes[target]
         if action_type == "ransomware":
-            if self.graph.nodes[target]["status"] != "isolated":
-                self.graph.nodes[target]["status"] = "encrypted"
-                self.score += 25 # Massive score penalty for encryption
-                return f"Ransomware payload detonated. {target} is ENCRYPTED."
+            if self.attacker_access.get(target) != "root":
+                return f"Encryption blocked on {target}: root access required."
+            if host["status"] == "encrypted":
+                return f"Host {target} already encrypted."
+            host["status"] = "encrypted"
+            host["encrypted"] = True
+            self.encrypted_ever.add(target)
+            return f"Ransomware payload detonated. {target} is ENCRYPTED."
 
-        # Fetch exploit probability if configured
-        exploit_info = self.exploits.get(detail, {})
-        success_prob = exploit_info.get("prob", 0.85)
-
-        if action_type in ["exploit", "pivot"]:
-            if random.random() <= success_prob:
-                self.attacker_access[target] = "user"
-                self.graph.nodes[target]["status"] = "compromised"
-                self.graph.nodes[target]["access"] = "user"
+        if action_type in ("exploit", "pivot"):
+            if target in self.attacker_access:
+                return f"Host {target} already compromised."
+            source = action[3] if len(action) > 3 else "(0, 0)"
+            if action_type == "pivot" and (source not in self.attacker_access or
+                                            self.graph.nodes[source]["status"] == "isolated"):
+                return f"Pivot blocked: no active foothold at {source}."
+            if not self.graph.has_edge(source, target):
+                return f"Attack blocked: no permitted connection from {source} to {target}."
+            allowed = self.graph.edges[source, target].get("allowed_services", [])
+            eligible = dict(exploits_for(self.config, self.graph, target, allowed))
+            if detail not in eligible:
+                return f"Attack blocked on {target}: exploit {detail} is incompatible with service, OS, or firewall."
+            rule = eligible[detail]
+            if self._succeeds(action, rule["prob"]):
+                access = rule.get("access", "user")
+                self.attacker_access[target] = access
+                host.update(status="compromised", access=access)
+                self.had_compromise = True
+                self.compromised_ever.add(target)
                 return f"Breach succeeded on {target} via {detail}."
-            else:
-                return f"Exploit attempt on {target} via {detail} failed."
-                
-        elif action_type == "escalate":
-            if random.random() <= 0.9:
+            return f"Exploit attempt on {target} via {detail} failed."
+
+        if action_type == "escalate":
+            if self.attacker_access.get(target) != "user":
+                return f"Privilege escalation blocked on {target}: user foothold required."
+            name = detail or escalation_for(self.config, self.graph, target)
+            rule = self.priv_esc.get(name, {})
+            if (not rule or rule.get("process") not in host.get("processes", [])
+                    or rule.get("os") not in (None, "None", host.get("os"))):
+                return f"Privilege escalation blocked on {target}: no compatible process."
+            if self._succeeds(action, rule.get("prob", 0)):
                 self.attacker_access[target] = "root"
-                self.graph.nodes[target]["access"] = "root"
+                host["access"] = "root"
                 return f"Privilege escalated to root on {target}."
-            else:
-                return f"Privilege escalation attempt on {target} failed."
-                
+            return f"Privilege escalation attempt on {target} failed."
         return "Action unrecognized or blocked."
+
+    def _succeeds(self, action, probability):
+        # Defense lookahead and wave ordering cannot consume real attack draws.
+        key = repr((self.seed, self.turn, tuple(action))).encode()
+        draw = int.from_bytes(hashlib.sha256(key).digest()[:8], "big") / 2**64
+        return draw < probability
 
     def _resolve_defense(self, blue_action):
         if not blue_action:
@@ -203,6 +241,7 @@ class MultiAgentCyberEngine:
         target = blue_action[1] if len(blue_action) > 1 else None
 
         if action_type == "isolate" and target in self.graph:
+            self._record_response()
             in_edges = list(self.graph.in_edges(target))
             out_edges = list(self.graph.out_edges(target))
             self.graph.remove_edges_from(in_edges + out_edges)
@@ -210,28 +249,22 @@ class MultiAgentCyberEngine:
             self.graph.nodes[target]["status"] = "isolated"
             return f"Isolated node {target}. Ingress and egress severed."
 
-        elif action_type == "remediate" and target in self.attacker_access:
+        elif (action_type == "remediate" and target in self.attacker_access
+              and self.graph.nodes[target]["status"] == "compromised"):
+            self._record_response()
             del self.attacker_access[target]
             self.graph.nodes[target]["status"] = "safe"
             self.graph.nodes[target]["access"] = "none"
             return f"Remediated node {target}. Malware cleared and credentials revoked."
 
-        elif action_type == "mitigate_ddos" and target in self.graph:
-            if self.graph.nodes[target]["status"] == "offline":
-                self.graph.nodes[target]["status"] = "safe"
-                
-                # MATHEMATICAL INCENTIVE: 
-                # Subtract 10 from Red's score (or add to Blue's reward)
-                self.score -= 10 
-                
-                return f"BGP Blackhole / Scrubbing deployed. Node {target} is back online."
-
-
         elif action_type == "restore_backup" and target in self.graph:
-            if self.graph.nodes[target]["status"] == "encrypted":
-                self.graph.nodes[target]["status"] = "safe"
-                # If they restore it, Blue reclaims the 25 points
-                self.score -= 25 
+            if self.graph.nodes[target].get("encrypted", False):
+                self._record_response()
+                self.graph.nodes[target]["encrypted"] = False
+                if self.graph.nodes[target]["status"] != "isolated":
+                    self.graph.nodes[target]["status"] = "safe"
+                self.graph.nodes[target]["access"] = "none"
+                self.recovered_hosts += 1
                 # Remove attacker access since the backup is clean
                 if target in self.attacker_access:
                     del self.attacker_access[target]
@@ -242,6 +275,10 @@ class MultiAgentCyberEngine:
             return "Defender monitoring alerts (no intervention)."
 
         return None
+
+    def _record_response(self):
+        if self.first_detection_turn is None:
+            self.first_detection_turn = self.turn
 
     def _log(self, text: str):
         entry = f"[Turn {self.turn:02d}] {text}"
@@ -292,5 +329,16 @@ class MultiAgentCyberEngine:
             "edges": edges,
             "event_log": self.event_log[-12:],
             "score": self.score,
-            "turn": self.turn
+            "turn": self.turn,
+            "scenario": self.scenario,
+            "seed": self.seed,
+            "outcome": self.outcome,
+            "metrics": {
+                "compromised_hosts": len(self.compromised_ever),
+                "encrypted_hosts": sum(d.get("encrypted", False) for _, d in self.graph.nodes(data=True)),
+                "ever_encrypted_hosts": len(self.encrypted_ever),
+                "unavailable_host_turns": self.unavailable_host_turns,
+                "first_detection_turn": self.first_detection_turn,
+                "recovered_hosts": self.recovered_hosts,
+            }
         }

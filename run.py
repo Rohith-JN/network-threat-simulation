@@ -22,11 +22,9 @@ def run_simulation():
         print(f"\n--- Turn {env.turn + 1} ---")
         
         # 1. Red calculates Probabilistic Dijkstra + Attack Tree
-        red_access = env.attacker_access
-        red_action = red_ai.get_optimal_attack_step(env.graph, red_access)
-        
         # 2. Blue calculates Bayesian Belief + Minimax Strategy
         blue_action = blue_ai.get_action(env, observations["blue_agent"], red_ai)
+        red_action = red_ai.get_optimal_attack_step(env.graph, env.attacker_access)
         
         # 3. Resolve the physics
         next_obs, rewards, term, trunc, info = env.step({

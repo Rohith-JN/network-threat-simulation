@@ -37,6 +37,11 @@
   background-color: #2563eb; /* Blue 600 */
 }
 
+.startButton:disabled, .unhinderedButton:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
 .unhinderedButton {
   flex: 1;
   padding: 0.5rem;
@@ -51,22 +56,6 @@
 
 .unhinderedButton:hover {
   background-color: #6b21a8; /* Purple 800 */
-}
-
-.ddosButton {
-  flex: 1;
-  padding: 0.5rem;
-  background-color: #d97706; /* Amber 600 */
-  color: white;
-  border: none;
-  border-radius: 4px;
-  font-weight: bold;
-  cursor: pointer;
-  transition: background-color 0.2s;
-}
-
-.ddosButton:hover {
-  background-color: #b45309; /* Amber 700 */
 }
 
 .dashboardContainer {
@@ -222,24 +211,20 @@
 }
 
 
-.nodeOffline {
-  background-color: #78350f; /* Dark Amber */
-  border-color: #f59e0b;     /* Bright Amber */
-  animation: shake 0.5s infinite; 
+.comparisonTable {
+  width: 100%;
+  font-size: 0.75rem;
+  border-collapse: collapse;
+  margin-bottom: 1rem;
 }
 
-@keyframes shake {
-  0% { transform: translate(1px, 1px) rotate(0deg); }
-  25% { transform: translate(-1px, -2px) rotate(-1deg); }
-  50% { transform: translate(-3px, 0px) rotate(1deg); }
-  75% { transform: translate(3px, 2px) rotate(0deg); }
-  100% { transform: translate(1px, -1px) rotate(1deg); }
+.comparisonTable th, .comparisonTable td {
+  text-align: left;
+  padding: 0.35rem;
+  border-bottom: 1px solid #374151;
 }
-
 .nodeEncrypted {
   background-color: #4c1d95; /* Deep Purple */
   border-color: #a855f7;     /* Bright Purple */
   box-shadow: 0 0 10px rgba(168, 85, 247, 0.5);
 }
-
-

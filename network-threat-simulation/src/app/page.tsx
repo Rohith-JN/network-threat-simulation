@@ -34,12 +34,26 @@ const ServerNode = ({ data }: { data: any }) => {
 // Register custom node type outside the main component to prevent re-rendering issues
 const nodeTypes = { serverNode: ServerNode };
 
+type RunMetrics = {
+  compromised_hosts: number;
+  encrypted_hosts: number;
+  ever_encrypted_hosts: number;
+  unavailable_host_turns: number;
+  first_detection_turn: number | null;
+  recovered_hosts: number;
+};
+type RunResult = { scenario: string; seed: number; outcome: string; metrics: RunMetrics; score: number };
+
 export default function CyberSimulationDashboard() {
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [eventLog, setEventLog] = useState<string[]>([]);
   const [score, setScore] = useState(0);
   const [turn, setTurn] = useState(0);
+  const [result, setResult] = useState<RunResult | null>(null);
+  const [isRunning, setIsRunning] = useState(false);
+  const [comparisons, setComparisons] = useState<Record<string, RunResult>>({});
+  const activeCommand = useRef('');
 
   // Store the WebSocket connection to use in the button click handler
   const wsRef = useRef<WebSocket | null>(null);
@@ -68,35 +82,22 @@ export default function CyberSimulationDashboard() {
       setEventLog(data.event_log);
       setScore(data.score);
       setTurn(data.turn);
+      setResult(data);
+      if (data.outcome !== 'Running' && activeCommand.current) {
+        setIsRunning(false);
+        setComparisons(previous => ({ ...previous, [activeCommand.current]: data }));
+      }
     };
+    ws.onerror = () => { setIsRunning(false); setEventLog(['[SYSTEM] Connection failed. Check the simulation server.']); };
+    ws.onclose = () => setIsRunning(false);
 
     return () => ws.close();
   }, []);
 
-  const handleStartSimulation = () => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send("start");
-      setEventLog(["[SYSTEM] Initiating defended simulation run..."]);
-    }
-  };
-
-  // --- NEW: Unhindered Simulation Handler ---
-  const handleStartNoDefense = () => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send("start_no_defense");
-      setEventLog(["[SYSTEM] Initiating UNHINDERED attack run. Blue Agent offline."]);
-    }
-  };
-
-  const handleStartDDoS = () => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send("start_ddos");
-      setEventLog(["[SYSTEM] Initiating Volumetric DDoS Attack..."]);
-    }
-  };
-
   const triggerSimulation = (command: string, logMsg: string) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      activeCommand.current = command;
+      setIsRunning(true);
       wsRef.current.send(command);
       setEventLog([logMsg]);
     }
@@ -124,11 +125,17 @@ export default function CyberSimulationDashboard() {
         </ReactFlow>
         {/* Overlay HUD */}
         <div className={styles.hudOverlay}>
-          <h1>Sentinel AI Defense</h1>
           <p>Turn: {turn}</p>
           <p className={score > 0 ? styles.scoreRed : styles.scoreBlue}>
-            Attacker Score: {score}
+            Cumulative impact: {score}
           </p>
+          {result?.metrics && <div>
+            <p>{result.outcome} · Seed {result.seed}</p>
+            <p>Hosts breached: {result.metrics.compromised_hosts}</p>
+            <p>Encrypted: {result.metrics.encrypted_hosts} current / {result.metrics.ever_encrypted_hosts} total</p>
+            <p>Unavailable host-turns: {result.metrics.unavailable_host_turns}</p>
+            <p>First response: {result.metrics.first_detection_turn ?? 'None'} · Restored: {result.metrics.recovered_hosts}</p>
+          </div>}
 
           {/* APT Controls */}
           <div className={styles.controlSection}>
@@ -136,12 +143,14 @@ export default function CyberSimulationDashboard() {
             <div className={styles.buttonGroup}>
               <button
                 className={styles.startButton}
+                disabled={isRunning}
                 onClick={() => triggerSimulation('killchain_defended', '[SYSTEM] APT Attack: Blue AI Defending.')}
               >
                 Defended
               </button>
               <button
                 className={styles.unhinderedButton}
+                disabled={isRunning}
                 onClick={() => triggerSimulation('killchain_unhindered', '[SYSTEM] APT Attack: Unhindered.')}
               >
                 Unhindered
@@ -156,12 +165,14 @@ export default function CyberSimulationDashboard() {
             <div className={styles.buttonGroup}>
               <button
                 className={styles.startButton}
+                disabled={isRunning}
                 onClick={() => triggerSimulation('ransomware_defended', '[SYSTEM] Ransomware: Blue AI Defending.')}
               >
                 Defended
               </button>
               <button
                 className={styles.unhinderedButton}
+                disabled={isRunning}
                 onClick={() => triggerSimulation('ransomware_unhindered', '[SYSTEM] Ransomware: Unhindered Spread.')}
               >
                 Unhindered
@@ -174,6 +185,22 @@ export default function CyberSimulationDashboard() {
       </div>
 
       <div className={styles.sidebar}>
+        <h2>Completed run comparison</h2>
+        <p>Both modes use seed 42. Downtime counts encrypted and isolated hosts each turn.</p>
+        {(['killchain', 'ransomware'] as const).map(scenario => (
+          <div key={scenario}>
+            <h3>{scenario === 'killchain' ? 'APT' : 'Ransomware'}</h3>
+            <table className={styles.comparisonTable}>
+              <thead><tr><th>Mode</th><th>Impact</th><th>Encrypted total</th><th>Downtime</th></tr></thead>
+              <tbody>{(['defended', 'unhindered'] as const).map(mode => {
+                const completed = comparisons[`${scenario}_${mode}`];
+                return <tr key={mode}><td>{mode}</td><td>{completed?.score ?? '—'}</td>
+                  <td>{completed?.metrics.ever_encrypted_hosts ?? '—'}</td>
+                  <td>{completed?.metrics.unavailable_host_turns ?? '—'}</td></tr>;
+              })}</tbody>
+            </table>
+          </div>
+        ))}
         <h2>Telemetry Logs</h2>
         <div className={styles.logContainer}>
           {eventLog.map((log, index) => (
